@@ -1,0 +1,8 @@
+fastapi>=0.100
+uvicorn>=0.23
+python-multipart>=0.0.9
+requests>=2.31.0
+PyPDF2==2.12.1
+pdfminer.six>=20221105
+mammoth>=1.6.0
+beautifulsoup4>=4.12.2

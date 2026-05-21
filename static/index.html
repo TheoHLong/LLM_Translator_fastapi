@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FastAPI LLM Translator</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [["$", "$"], ["\\(", "\\)"]],
+          displayMath: [["$$", "$$"], ["\\[", "\\]"]],
+          processEscapes: true
+        },
+        svg: { fontCache: "global" }
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+  </head>
+  <body>
+    <header class="app-bar">
+      <div>
+        <h1>FastAPI LLM Translator</h1>
+        <p id="modelLine">Local Ollama translator</p>
+      </div>
+      <div id="status" class="status">Idle</div>
+    </header>
+
+    <section class="panel controls-panel">
+      <form id="translateForm">
+        <label class="file-picker">
+          <span>Document</span>
+          <input id="fileInput" name="file" type="file" accept=".pdf,.docx,.txt,.html,.vtt,.srt" required>
+        </label>
+
+        <label>
+          Mode
+          <select id="processingMode" name="processing_mode">
+            <option value="translate">Document Translation</option>
+            <option value="summarize">Content Extraction / Summarize</option>
+          </select>
+        </label>
+
+        <label>
+          Direction
+          <select id="direction" name="direction">
+            <option value="en-zh">English to Chinese</option>
+            <option value="zh-en">Chinese to English</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+
+        <label>
+          Segment size
+          <input id="maxSegmentChars" name="max_segment_chars" type="number" min="500" max="5000" step="100" value="1600">
+        </label>
+
+        <div class="button-row">
+          <button id="startButton" type="submit">Start</button>
+          <button id="refineButton" type="button">Refine</button>
+          <button id="cancelButton" type="button" disabled>Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <main class="workspace">
+      <section class="panel output-panel">
+        <div class="output-header">
+          <div>
+            <span id="documentLabel">No document loaded</span>
+            <span id="stats" class="muted"></span>
+          </div>
+          <progress id="progress" max="1" value="0"></progress>
+        </div>
+        <div id="segments" class="segments empty"></div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
