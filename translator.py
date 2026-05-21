@@ -22,6 +22,13 @@ class ProtectedText:
     placeholders: Dict[str, str]
 
 
+@dataclass
+class RefinementContextEntry:
+    label: str
+    source: str
+    quick_translation: Optional[str] = None
+
+
 class TextProtector:
     """Protect LaTeX math and code from translation edits."""
 
@@ -143,13 +150,15 @@ Text:
         target_lang: str,
         quality: str = "refine",
         initial: Optional[str] = None,
+        context: Optional[List[RefinementContextEntry]] = None,
     ) -> Iterator[str]:
         protected = self.protector.protect(text)
 
         if quality == "refine":
             quick = initial or self._translate_quick(protected, source_lang, target_lang)
-            notes = self._reflection_notes(protected, source_lang, target_lang, quick)
-            prompt = self._improvement_prompt(protected.text, target_lang, quick, notes)
+            context_block = self._refinement_context_block(context or [], source_lang, target_lang)
+            notes = self._reflection_notes(protected, source_lang, target_lang, quick, context_block)
+            prompt = self._improvement_prompt(protected.text, target_lang, quick, notes, context_block)
             yield from self._completion_stream(
                 prompt,
                 "You are an expert translation editor.",
@@ -192,16 +201,20 @@ Do not provide explanations or text apart from the translation.
         source_lang: str,
         target_lang: str,
         initial: str,
+        context_block: str = "",
     ) -> str:
-        prompt = f"""Review this {source_lang} to {target_lang} translation.
+        context_section = f"{context_block}\n\n" if context_block else ""
+        prompt = f"""Review this {source_lang} to {target_lang} translation for the CURRENT segment.
+Use the surrounding segments only as context for terminology, pronouns, transitions, and discourse flow.
+Do not rewrite or translate the surrounding segments.
 
-Source:
+{context_section}Current source:
 {protected.text}
 
-Translation:
+Current quick translation:
 {initial}
 
-Give concise, specific improvement notes only.
+Give concise, specific improvement notes for the CURRENT segment only.
 """
         return self._completion(
             prompt,
@@ -210,20 +223,51 @@ Give concise, specific improvement notes only.
         )
 
     @staticmethod
-    def _improvement_prompt(text: str, target_lang: str, initial: str, notes: str) -> str:
-        return f"""Improve the translation using the notes.
+    def _improvement_prompt(
+        text: str,
+        target_lang: str,
+        initial: str,
+        notes: str,
+        context_block: str = "",
+    ) -> str:
+        context_section = f"{context_block}\n\n" if context_block else ""
+        return f"""Improve only the CURRENT segment translation using the notes and context.
+Use surrounding segments only to keep terminology, references, pronouns, tense, tone, and sentence transitions consistent.
+Do not include labels, notes, explanations, or any surrounding segment content.
 
-Source:
+{context_section}Current source:
 {text}
 
-Current translation:
+Current quick translation:
 {initial}
 
 Notes:
 {notes}
 
-Output only the improved {target_lang} translation.
+Output only the improved {target_lang} translation for the CURRENT segment.
 """
+
+    @staticmethod
+    def _refinement_context_block(
+        context: List[RefinementContextEntry],
+        source_lang: str,
+        target_lang: str,
+    ) -> str:
+        if not context:
+            return ""
+
+        blocks = ["Surrounding context segments (reference only; do not output these):"]
+        for entry in context:
+            blocks.append(f"[{entry.label}]")
+            blocks.append(f"{source_lang} source:")
+            blocks.append(entry.source)
+            if entry.quick_translation:
+                blocks.append(f"Quick {target_lang} translation:")
+                blocks.append(entry.quick_translation)
+            else:
+                blocks.append(f"Quick {target_lang} translation: unavailable")
+            blocks.append("")
+        return "\n".join(blocks).strip()
 
     def _completion(
         self,

@@ -262,6 +262,8 @@ def remove_pdf_noise_lines(lines: List[str]) -> List[str]:
 
 
 def is_pdf_noise_line(line: str) -> bool:
+    if is_biorxiv_boilerplate_line(line):
+        return True
     if re.fullmatch(r"a1{5,}", line):
         return True
     if line in {"PLOS COMPUTATIONAL BIOLOGY", "OPEN ACCESS", "EDITORIAL"}:
@@ -273,6 +275,23 @@ def is_pdf_noise_line(line: str) -> bool:
     if re.search(r"\b\d+\s*/\s*\d+\s*$", line) and "doi.org" in line:
         return True
     if re.fullmatch(r"\d+\s*/\s*\d+", line):
+        return True
+    return False
+
+
+def is_biorxiv_boilerplate_line(line: str) -> bool:
+    lowered = line.lower()
+    if "cc-by-nc" in lowered and "international license" in lowered:
+        return True
+    if (
+        "not certified by peer review" in lowered
+        and "author/funder" in lowered
+        and "biorxiv" in lowered
+    ):
+        return True
+    if "copyright holder for this preprint" in lowered and "biorxiv preprint" in lowered:
+        return True
+    if "doi.org/10.1101/" in lowered and "biorxiv preprint" in lowered:
         return True
     return False
 

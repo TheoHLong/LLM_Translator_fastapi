@@ -5,6 +5,7 @@
     processingMode: document.getElementById("processingMode"),
     direction: document.getElementById("direction"),
     maxSegmentChars: document.getElementById("maxSegmentChars"),
+    refineContextNeighbors: document.getElementById("refineContextNeighbors"),
     startButton: document.getElementById("startButton"),
     refineButton: document.getElementById("refineButton"),
     cancelButton: document.getElementById("cancelButton"),
@@ -131,6 +132,7 @@
     formData.append("quality", quality);
     formData.append("direction", els.direction.value);
     formData.append("max_segment_chars", els.maxSegmentChars.value);
+    formData.append("refine_context_neighbors", els.refineContextNeighbors.value);
 
     try {
       const response = await fetch("/api/translate/stream", {
@@ -193,7 +195,10 @@
       els.progress.value = 0;
       els.documentLabel.textContent = `${event.filename} (${event.file_type})`;
       els.modelLine.textContent = `Ollama model: ${event.model}`;
-      els.stats.textContent = `${event.source_lang} to ${event.target_lang} / ${event.mode} / ${event.quality}`;
+      const contextLabel = event.quality === "refine"
+        ? ` / context ±${event.refine_context_neighbors || 1}`
+        : "";
+      els.stats.textContent = `${event.source_lang} to ${event.target_lang} / ${event.mode} / ${event.quality}${contextLabel}`;
       return;
     }
     if (event.type === "segment_start") {

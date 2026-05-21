@@ -8,6 +8,7 @@ project's core workflow while moving streaming display into browser-managed DOM:
 - choose document translation or content extraction / summarize mode
 - stream Ollama translation output per segment
 - use quick translation by default, with a separate Refine action
+- refine with selectable neighboring segment context windows
 - reuse cached summaries and quick translations when refining summarize output
 - preserve LaTeX math and code with placeholders
 - render final math with MathJax

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from cache import TranslationCache
 from document_parser import Segment, parse_upload
-from translator import OllamaTranslationError, OllamaTranslator, PROMPT_VERSION
+from translator import OllamaTranslationError, OllamaTranslator, PROMPT_VERSION, RefinementContextEntry
 
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +48,7 @@ async def translate_file_stream(
     quality: str = Form("quick"),
     direction: str = Form("en-zh"),
     max_segment_chars: int = Form(1600),
+    refine_context_neighbors: int = Form(1),
 ) -> StreamingResponse:
     content = await file.read()
     filename = file.filename or "uploaded"
@@ -59,6 +60,7 @@ async def translate_file_stream(
             quality=quality,
             direction=direction,
             max_segment_chars=max_segment_chars,
+            refine_context_neighbors=refine_context_neighbors,
         ),
         media_type="application/x-ndjson",
     )
@@ -72,10 +74,12 @@ def stream_translation_events(
     quality: str,
     direction: str,
     max_segment_chars: int,
+    refine_context_neighbors: int,
 ) -> Iterator[str]:
     try:
         safe_quality = quality if quality in {"quick", "refine"} else "quick"
         safe_mode = processing_mode if processing_mode in {"translate", "extract", "summarize"} else "translate"
+        safe_context_neighbors = normalize_refine_context_neighbors(refine_context_neighbors)
         if safe_mode == "extract":
             safe_mode = "summarize"
         parsed = parse_upload(filename, content, max_segment_chars=max_segment_chars)
@@ -94,16 +98,20 @@ def stream_translation_events(
                 "model": translator.model,
                 "mode": safe_mode,
                 "quality": safe_quality,
+                "refine_context_neighbors": safe_context_neighbors,
             }
         )
 
-        for segment in parsed.segments:
+        for segment_index, segment in enumerate(parsed.segments):
             yield from process_segment(
                 segment=segment,
+                all_segments=parsed.segments,
+                segment_index=segment_index,
                 processing_mode=safe_mode,
                 quality=safe_quality,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                refine_context_neighbors=safe_context_neighbors,
                 stats=stats,
             )
 
@@ -118,10 +126,13 @@ def stream_translation_events(
 def process_segment(
     *,
     segment: Segment,
+    all_segments: List[Segment],
+    segment_index: int,
     processing_mode: str,
     quality: str,
     source_lang: str,
     target_lang: str,
+    refine_context_neighbors: int,
     stats: Dict[str, int],
 ) -> Iterator[str]:
     source_text = segment.text
@@ -165,11 +176,39 @@ def process_segment(
             stats["summarized"] += 1
         yield ndjson_event({"type": "segment_source_update", "id": segment.id, "source": working_text})
 
+    quick_initial = None
+    context_entries: List[RefinementContextEntry] = []
+    cache_mode = f"{processing_mode}:{quality}"
+    cache_text = working_text
+
+    if quality == "refine":
+        quick_initial = get_cached_quick_translation(
+            text=working_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            processing_mode=processing_mode,
+        )
+        context_entries = build_refinement_context(
+            segments=all_segments,
+            current_index=segment_index,
+            neighbor_count=refine_context_neighbors,
+            processing_mode=processing_mode,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        cache_mode = f"{processing_mode}:refine:ctx{refine_context_neighbors}"
+        cache_text = make_refine_cache_text(
+            current_text=working_text,
+            current_quick=quick_initial,
+            context_entries=context_entries,
+            neighbor_count=refine_context_neighbors,
+        )
+
     cache_key = make_cache_key(
-        text=working_text,
+        text=cache_text,
         source_lang=source_lang,
         target_lang=target_lang,
-        mode=f"{processing_mode}:{quality}",
+        mode=cache_mode,
     )
     cached_value = cache.get(cache_key)
     if cached_value is not None:
@@ -184,16 +223,6 @@ def process_segment(
             }
         )
         return
-
-    quick_initial = None
-    if quality == "refine":
-        quick_key = make_cache_key(
-            text=working_text,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            mode=f"{processing_mode}:quick",
-        )
-        quick_initial = cache.get(quick_key)
 
     yield ndjson_event(
         {
@@ -210,6 +239,7 @@ def process_segment(
         target_lang,
         quality,
         initial=quick_initial,
+        context=context_entries,
     ):
         final_translation = partial
         yield ndjson_event({"type": "chunk", "id": segment.id, "text": partial})
@@ -221,8 +251,9 @@ def process_segment(
             "source_lang": source_lang,
             "target_lang": target_lang,
             "model": translator.model,
-            "mode": f"{processing_mode}:{quality}",
+            "mode": cache_mode,
             "prompt_version": PROMPT_VERSION,
+            "refine_context_neighbors": refine_context_neighbors if quality == "refine" else None,
         },
     )
     stats["translated"] += 1
@@ -257,6 +288,103 @@ def make_summary_cache_key(*, text: str, source_lang: str) -> str:
         mode="summarize:source",
         prompt_version=PROMPT_VERSION,
     )
+
+
+def normalize_refine_context_neighbors(value: int) -> int:
+    return value if value in {1, 2, 3} else 1
+
+
+def get_cached_quick_translation(
+    *,
+    text: str,
+    source_lang: str,
+    target_lang: str,
+    processing_mode: str,
+) -> Optional[str]:
+    quick_key = make_cache_key(
+        text=text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        mode=f"{processing_mode}:quick",
+    )
+    return cache.get(quick_key)
+
+
+def build_refinement_context(
+    *,
+    segments: List[Segment],
+    current_index: int,
+    neighbor_count: int,
+    processing_mode: str,
+    source_lang: str,
+    target_lang: str,
+) -> List[RefinementContextEntry]:
+    context: List[RefinementContextEntry] = []
+    start_index = max(0, current_index - neighbor_count)
+    end_index = min(len(segments), current_index + neighbor_count + 1)
+
+    for index in range(start_index, end_index):
+        if index == current_index:
+            continue
+        source_text = context_source_text(
+            segment=segments[index],
+            processing_mode=processing_mode,
+            source_lang=source_lang,
+        )
+        quick_translation = None
+        if not translator.should_skip_translation(source_text):
+            quick_translation = get_cached_quick_translation(
+                text=source_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                processing_mode=processing_mode,
+            )
+        context.append(
+            RefinementContextEntry(
+                label=refinement_context_label(index - current_index),
+                source=source_text,
+                quick_translation=quick_translation,
+            )
+        )
+
+    return context
+
+
+def context_source_text(*, segment: Segment, processing_mode: str, source_lang: str) -> str:
+    if processing_mode == "summarize" and len(segment.text) >= 240:
+        cached_summary = cache.get(make_summary_cache_key(text=segment.text, source_lang=source_lang))
+        if cached_summary is not None:
+            return cached_summary
+    return segment.text
+
+
+def refinement_context_label(offset: int) -> str:
+    if offset < 0:
+        return f"previous segment {abs(offset)}"
+    return f"next segment {offset}"
+
+
+def make_refine_cache_text(
+    *,
+    current_text: str,
+    current_quick: Optional[str],
+    context_entries: List[RefinementContextEntry],
+    neighbor_count: int,
+) -> str:
+    payload = {
+        "current_text": current_text,
+        "current_quick": current_quick or "",
+        "neighbor_count": neighbor_count,
+        "context": [
+            {
+                "label": entry.label,
+                "source": entry.source,
+                "quick_translation": entry.quick_translation or "",
+            }
+            for entry in context_entries
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def ndjson_event(payload: Dict[str, Any]) -> str:

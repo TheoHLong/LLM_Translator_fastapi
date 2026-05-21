@@ -100,7 +100,13 @@ h1 {
 
 form {
   display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) minmax(220px, 1fr) minmax(190px, 0.8fr) minmax(130px, 0.5fr) auto;
+  grid-template-columns:
+    minmax(240px, 1.35fr)
+    minmax(190px, 0.95fr)
+    minmax(170px, 0.75fr)
+    minmax(120px, 0.45fr)
+    minmax(150px, 0.55fr)
+    auto;
   align-items: end;
   gap: 14px;
 }
