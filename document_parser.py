@@ -54,7 +54,11 @@ def parse_upload(filename: str, content: bytes, max_segment_chars: int = 1600) -
     else:
         text = decode_text(content)
 
-    segments = split_segments(text, max_segment_chars=max_segment_chars)
+    segments = split_segments(
+        text,
+        max_segment_chars=max_segment_chars,
+        preserve_paragraphs=extension == ".pdf",
+    )
     return ParsedDocument(filename=filename, file_type=extension.lstrip("."), segments=segments)
 
 
@@ -509,11 +513,15 @@ def extract_subtitle_text(content: bytes) -> str:
     return "\n".join(text_lines)
 
 
-def split_segments(text: str, max_segment_chars: int = 1600) -> List[Segment]:
+def split_segments(
+    text: str,
+    max_segment_chars: int = 1600,
+    preserve_paragraphs: bool = False,
+) -> List[Segment]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     raw_blocks = [block.strip() for block in re.split(r"\n\s*\n", normalized) if block.strip()]
 
-    line_based = len(raw_blocks) <= 1
+    line_based = len(raw_blocks) <= 1 and not preserve_paragraphs
     if line_based:
         raw_blocks = [line.strip() for line in normalized.splitlines() if line.strip()]
     else:
@@ -525,6 +533,9 @@ def split_segments(text: str, max_segment_chars: int = 1600) -> List[Segment]:
             split_blocks.append(block)
         else:
             split_blocks.extend(split_long_block(block, max_segment_chars))
+
+    if preserve_paragraphs and not line_based:
+        return [Segment(id=str(index), text=value) for index, value in enumerate(split_blocks) if value.strip()]
 
     separator = "\n" if line_based else "\n\n"
     segments = coalesce_blocks(split_blocks, max_segment_chars, separator, respect_headings=not line_based)
@@ -591,6 +602,12 @@ def should_merge_continuation_block(previous_block: str, block: str) -> bool:
     current = block.strip()
     if not previous or not current:
         return False
+    if (
+        is_standalone_heading_block(previous)
+        and starts_with_continuation_character(current)
+        and not ends_with_terminal_punctuation(previous)
+    ):
+        return True
     if is_standalone_heading_block(previous) or is_standalone_heading_block(current):
         return False
     if ends_with_dangling_inline_enumerator(previous):
@@ -636,7 +653,9 @@ def is_probable_standalone_block(text: str) -> bool:
 
 def is_standalone_heading_block(text: str) -> bool:
     stripped = text.strip()
-    return bool("\n" not in stripped and is_pdf_heading_line(stripped))
+    if "\n" in stripped or starts_with_continuation_character(stripped):
+        return False
+    return bool(is_pdf_heading_line(stripped))
 
 
 def split_long_block(block: str, max_segment_chars: int) -> List[str]:
