@@ -79,7 +79,16 @@
             <span id="documentLabel">No document loaded</span>
             <span id="stats" class="muted"></span>
           </div>
-          <progress id="progress" max="1" value="0"></progress>
+          <div class="output-tools">
+            <label class="display-control">
+              Font size
+              <span class="size-control">
+                <input id="translationFontSize" type="range" min="13" max="18" step="1" value="15">
+                <output id="translationFontSizeValue">15px</output>
+              </span>
+            </label>
+            <progress id="progress" max="1" value="0"></progress>
+          </div>
         </div>
         <div id="segments" class="segments empty"></div>
       </section>

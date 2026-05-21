@@ -13,13 +13,53 @@
     modelLine: document.getElementById("modelLine"),
     documentLabel: document.getElementById("documentLabel"),
     stats: document.getElementById("stats"),
+    translationFontSize: document.getElementById("translationFontSize"),
+    translationFontSizeValue: document.getElementById("translationFontSizeValue"),
     progress: document.getElementById("progress"),
     segments: document.getElementById("segments")
   };
 
+  const translationFontSizeKey = "llmTranslator.translationFontSize";
+  const defaultTranslationFontSize = 15;
+  const minTranslationFontSize = 13;
+  const maxTranslationFontSize = 18;
+
   let currentAbort = null;
   let segmentCount = 0;
   let completedCount = 0;
+
+  function normalizeTranslationFontSize(value) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return defaultTranslationFontSize;
+    return Math.min(maxTranslationFontSize, Math.max(minTranslationFontSize, parsed));
+  }
+
+  function applyTranslationFontSize(value, persist) {
+    const size = normalizeTranslationFontSize(value);
+    document.documentElement.style.setProperty("--translation-font-size", `${size}px`);
+    els.translationFontSize.value = String(size);
+    els.translationFontSizeValue.textContent = `${size}px`;
+    if (persist) {
+      try {
+        window.localStorage.setItem(translationFontSizeKey, String(size));
+      } catch (_error) {
+        // Local storage can be unavailable in restricted browser contexts.
+      }
+    }
+  }
+
+  function restoreTranslationFontSize() {
+    let storedSize = "";
+    try {
+      storedSize = window.localStorage.getItem(translationFontSizeKey) || "";
+    } catch (_error) {
+      storedSize = "";
+    }
+    applyTranslationFontSize(
+      storedSize || defaultTranslationFontSize,
+      false
+    );
+  }
 
   function setStatus(message, tone) {
     els.status.textContent = message;
@@ -278,5 +318,9 @@
   els.form.addEventListener("submit", (event) => startTranslation(event, "quick"));
   els.refineButton.addEventListener("click", () => startTranslation(null, "refine"));
   els.cancelButton.addEventListener("click", cancelTranslation);
+  els.translationFontSize.addEventListener("input", () => {
+    applyTranslationFontSize(els.translationFontSize.value, true);
+  });
+  restoreTranslationFontSize();
   checkHealth();
 })();
