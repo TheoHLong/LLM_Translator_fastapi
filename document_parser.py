@@ -17,6 +17,12 @@ from PyPDF2 import PdfReader
 
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".html", ".vtt", ".srt"}
+INLINE_ENUMERATOR_PATTERN = re.compile(r"(?:\(\d{1,3}\)|\[\d{1,3}\]|\b\d{1,3}[.)])")
+INLINE_ENUMERATOR_START_PATTERN = re.compile(r"^(?:\(\d{1,3}\)|\[\d{1,3}\]|\d{1,3}[.)])\s+")
+DANGLING_INLINE_ENUMERATOR_PATTERN = re.compile(
+    r"(?:^|\s)(?:\(\d{1,3}\)|\[\d{1,3}\]|\d{1,3}[.)])$"
+)
+TERMINAL_PUNCTUATION_PATTERN = re.compile(r"[.!?。！？)”’\"'\]]$")
 
 
 @dataclass
@@ -330,7 +336,11 @@ def is_pdf_heading_line(line: str) -> bool:
 def should_start_new_pdf_paragraph(previous_line: str, line: str) -> bool:
     if re.match(r"^(Rule|Table|Figure|Fig\.)\s+\d+\b", line):
         return True
-    if not re.search(r"[.!?。！？)”’\"'\]]$", previous_line):
+    if ends_with_dangling_inline_enumerator(previous_line):
+        return False
+    if starts_with_inline_enumerator(line) and has_recent_inline_enumerator(previous_line):
+        return False
+    if not ends_with_terminal_punctuation(previous_line):
         return False
     return bool(re.match(r"^[A-Z“\"'(\[]", line))
 
@@ -463,6 +473,8 @@ def split_segments(text: str, max_segment_chars: int = 1600) -> List[Segment]:
     line_based = len(raw_blocks) <= 1
     if line_based:
         raw_blocks = [line.strip() for line in normalized.splitlines() if line.strip()]
+    else:
+        raw_blocks = merge_continuation_blocks(raw_blocks)
 
     split_blocks: List[str] = []
     for block in raw_blocks:
@@ -472,20 +484,39 @@ def split_segments(text: str, max_segment_chars: int = 1600) -> List[Segment]:
             split_blocks.extend(split_long_block(block, max_segment_chars))
 
     separator = "\n" if line_based else "\n\n"
-    segments = coalesce_blocks(split_blocks, max_segment_chars, separator)
+    segments = coalesce_blocks(split_blocks, max_segment_chars, separator, respect_headings=not line_based)
     return [Segment(id=str(index), text=value) for index, value in enumerate(segments) if value.strip()]
 
 
-def coalesce_blocks(blocks: List[str], max_segment_chars: int, separator: str = "\n\n") -> List[str]:
+def coalesce_blocks(
+    blocks: List[str],
+    max_segment_chars: int,
+    separator: str = "\n\n",
+    respect_headings: bool = False,
+) -> List[str]:
     """Merge short adjacent blocks so subtitles and line-based text summarize coherently."""
     segments: List[str] = []
     current = ""
+    soft_heading_limit = max(max_segment_chars, int(max_segment_chars * 1.15))
 
     for block in blocks:
         if not block.strip():
             continue
 
+        if respect_headings and current and is_standalone_heading_block(block):
+            segments.append(current.strip())
+            current = block
+            continue
+
         candidate = f"{current}{separator}{block}".strip() if current else block
+        if (
+            respect_headings
+            and current
+            and is_standalone_heading_block(current)
+            and len(candidate) <= soft_heading_limit
+        ):
+            current = candidate
+            continue
         if current and len(candidate) > max_segment_chars:
             segments.append(current.strip())
             current = block
@@ -498,8 +529,75 @@ def coalesce_blocks(blocks: List[str], max_segment_chars: int, separator: str = 
     return segments
 
 
+def merge_continuation_blocks(blocks: List[str]) -> List[str]:
+    merged: List[str] = []
+
+    for block in blocks:
+        if not block.strip():
+            continue
+        if merged and should_merge_continuation_block(merged[-1], block):
+            merged[-1] = f"{merged[-1]} {block.strip()}"
+        else:
+            merged.append(block.strip())
+
+    return merged
+
+
+def should_merge_continuation_block(previous_block: str, block: str) -> bool:
+    previous = previous_block.strip()
+    current = block.strip()
+    if not previous or not current:
+        return False
+    if is_standalone_heading_block(previous) or is_standalone_heading_block(current):
+        return False
+    if ends_with_dangling_inline_enumerator(previous):
+        return True
+    if starts_with_inline_enumerator(current) and has_recent_inline_enumerator(previous):
+        return True
+    if re.search(r"[,;:]\s*$", previous):
+        return True
+    if re.search(r"[(\[{]\s*$", previous):
+        return True
+    if re.search(r"[-\u2013\u2014]\s*$", previous):
+        return True
+    if starts_with_continuation_character(current) and not is_probable_standalone_block(current):
+        return True
+    return False
+
+
+def ends_with_terminal_punctuation(text: str) -> bool:
+    return bool(TERMINAL_PUNCTUATION_PATTERN.search(text.strip()))
+
+
+def ends_with_dangling_inline_enumerator(text: str) -> bool:
+    return bool(DANGLING_INLINE_ENUMERATOR_PATTERN.search(text.strip()))
+
+
+def starts_with_inline_enumerator(text: str) -> bool:
+    return bool(INLINE_ENUMERATOR_START_PATTERN.match(text.strip()))
+
+
+def has_recent_inline_enumerator(text: str, window: int = 240) -> bool:
+    return bool(INLINE_ENUMERATOR_PATTERN.search(text.strip()[-window:]))
+
+
+def starts_with_continuation_character(text: str) -> bool:
+    stripped = text.lstrip()
+    return bool(stripped and (stripped[0].islower() or stripped[0] in ")]},;:"))
+
+
+def is_probable_standalone_block(text: str) -> bool:
+    stripped = text.strip()
+    return bool(is_standalone_heading_block(stripped) or re.match(r"^(Rule|Table|Figure|Fig\.)\s+\d+\b", stripped))
+
+
+def is_standalone_heading_block(text: str) -> bool:
+    stripped = text.strip()
+    return bool("\n" not in stripped and is_pdf_heading_line(stripped))
+
+
 def split_long_block(block: str, max_segment_chars: int) -> List[str]:
-    parts = re.split(r"(?<=[.!?。！？])\s+", block)
+    parts = protect_dangling_inline_enumerators(re.split(r"(?<=[.!?。！？])\s+", block))
     chunks: List[str] = []
     current = ""
 
@@ -519,3 +617,18 @@ def split_long_block(block: str, max_segment_chars: int) -> List[str]:
         return chunks
 
     return [block[index:index + max_segment_chars] for index in range(0, len(block), max_segment_chars)]
+
+
+def protect_dangling_inline_enumerators(parts: List[str]) -> List[str]:
+    protected: List[str] = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if protected and ends_with_dangling_inline_enumerator(protected[-1]):
+            protected[-1] = f"{protected[-1]} {part}"
+        else:
+            protected.append(part)
+
+    return protected
