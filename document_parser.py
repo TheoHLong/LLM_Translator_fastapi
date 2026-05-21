@@ -229,10 +229,13 @@ PDF_METADATA_PREFIXES = (
 def remove_pdf_noise_lines(lines: List[str]) -> List[str]:
     cleaned = []
     discard_rest_of_page = False
+    in_visual_block = False
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            if in_visual_block:
+                continue
             if cleaned and cleaned[-1]:
                 cleaned.append("")
             continue
@@ -240,13 +243,19 @@ def remove_pdf_noise_lines(lines: List[str]) -> List[str]:
         if discard_rest_of_page:
             continue
 
+        if in_visual_block:
+            if is_pdf_visual_block_resume_line(stripped):
+                in_visual_block = False
+            else:
+                continue
+
         if is_pdf_noise_line(stripped):
             if stripped.upper() == "OPEN ACCESS":
                 discard_rest_of_page = True
             continue
 
-        if cleaned and re.match(r"^(Table|Figure|Fig\.)\s+\d+\b", stripped):
-            discard_rest_of_page = True
+        if is_pdf_visual_block_start(stripped):
+            in_visual_block = True
             continue
 
         lowered = stripped.lower()
@@ -259,6 +268,21 @@ def remove_pdf_noise_lines(lines: List[str]) -> List[str]:
     while cleaned and not cleaned[-1]:
         cleaned.pop()
     return cleaned
+
+
+def is_pdf_visual_block_start(line: str) -> bool:
+    return bool(re.match(r"^(Table|Figure|Fig\.)\s+\d+\b", line))
+
+
+def is_pdf_visual_block_resume_line(line: str) -> bool:
+    return bool(
+        re.match(r"^Rule\s+\d+\b", line)
+        or re.fullmatch(
+            r"(Discussion|References|Acknowledg(?:e)?ments)",
+            line,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def is_pdf_noise_line(line: str) -> bool:
