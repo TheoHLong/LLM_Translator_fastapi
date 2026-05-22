@@ -29,6 +29,7 @@ TERMINAL_PUNCTUATION_PATTERN = re.compile(r"[.!?。！？)”’\"'\]]$")
 class Segment:
     id: str
     text: str
+    kind: str = "paragraph"
 
 
 @dataclass
@@ -59,6 +60,7 @@ def parse_upload(filename: str, content: bytes, max_segment_chars: int = 1600) -
         max_segment_chars=max_segment_chars,
         preserve_paragraphs=extension == ".pdf",
     )
+    segments = annotate_segments(segments, file_type=extension.lstrip("."))
     return ParsedDocument(filename=filename, file_type=extension.lstrip("."), segments=segments)
 
 
@@ -540,6 +542,50 @@ def split_segments(
     separator = "\n" if line_based else "\n\n"
     segments = coalesce_blocks(split_blocks, max_segment_chars, separator, respect_headings=not line_based)
     return [Segment(id=str(index), text=value) for index, value in enumerate(segments) if value.strip()]
+
+
+def annotate_segments(segments: List[Segment], file_type: str) -> List[Segment]:
+    if file_type != "pdf":
+        return segments
+
+    seen_body = False
+    for index, segment in enumerate(segments):
+        text = segment.text.strip()
+        if not text:
+            continue
+
+        if index == 0 and is_likely_pdf_title(text):
+            segment.kind = "title"
+            continue
+
+        if is_likely_pdf_section_heading(text):
+            segment.kind = "heading"
+            seen_body = True
+            continue
+
+        if not seen_body:
+            segment.kind = "front-matter"
+        elif is_standalone_heading_block(text):
+            segment.kind = "heading"
+
+    return segments
+
+
+def is_likely_pdf_title(text: str) -> bool:
+    return bool(len(text) <= 240 and not is_likely_pdf_section_heading(text))
+
+
+def is_likely_pdf_section_heading(text: str) -> bool:
+    stripped = text.strip()
+    return bool(
+        re.match(r"^Rule\s+\d+\b", stripped)
+        or re.fullmatch(
+            r"(Abstract|Introduction|Background|Summary|Overview|Discussion|Conclusion|"
+            r"Methods|Results|References|Acknowledg(?:e)?ments)",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def coalesce_blocks(

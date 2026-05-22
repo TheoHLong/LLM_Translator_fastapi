@@ -136,7 +136,14 @@ def process_segment(
     stats: Dict[str, int],
 ) -> Iterator[str]:
     source_text = segment.text
-    yield ndjson_event({"type": "segment_start", "id": segment.id, "source": source_text})
+    yield ndjson_event(
+        {
+            "type": "segment_start",
+            "id": segment.id,
+            "source": source_text,
+            "kind": segment.kind,
+        }
+    )
 
     if translator.should_skip_translation(source_text):
         stats["skipped"] += 1

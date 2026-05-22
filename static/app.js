@@ -83,14 +83,32 @@
     els.segments.classList.add("empty");
   }
 
-  function ensureSegment(id, sourceText) {
+  function applySegmentKind(segment, kind) {
+    const safeKind = ["title", "heading", "front-matter", "paragraph"].includes(kind)
+      ? kind
+      : "paragraph";
+    segment.dataset.segmentKind = safeKind;
+    segment.classList.remove(
+      "segment--title",
+      "segment--heading",
+      "segment--front-matter",
+      "segment--paragraph"
+    );
+    segment.classList.add(`segment--${safeKind}`);
+  }
+
+  function ensureSegment(id, sourceText, kind) {
     let segment = document.querySelector(`[data-segment-id="${cssEscape(id)}"]`);
-    if (segment) return segment;
+    if (segment) {
+      if (kind) applySegmentKind(segment, kind);
+      return segment;
+    }
 
     els.segments.classList.remove("empty");
     segment = document.createElement("section");
     segment.className = "segment";
     segment.dataset.segmentId = id;
+    applySegmentKind(segment, kind);
     segment.innerHTML = [
       `<div class="cell source-cell">`,
       `<pre class="text-block source"></pre>`,
@@ -242,7 +260,7 @@
       return;
     }
     if (event.type === "segment_start") {
-      ensureSegment(event.id, event.source || "");
+      ensureSegment(event.id, event.source || "", event.kind);
       updateSegmentStatus(event.id, "translating");
       return;
     }

@@ -272,6 +272,19 @@ progress {
   margin: 0 0 18px;
 }
 
+.segment--title {
+  margin-bottom: 26px;
+}
+
+.segment--heading {
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.segment--front-matter {
+  margin-bottom: 10px;
+}
+
 .cell {
   min-width: 0;
   padding: 0;
@@ -302,6 +315,42 @@ progress {
   min-height: 2lh;
   font-size: var(--translation-font-size);
   line-height: 1.85;
+}
+
+.segment--title .text-block {
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.segment--title .translation {
+  font-size: calc(var(--translation-font-size) + 3px);
+  font-weight: 750;
+  line-height: 1.6;
+}
+
+.segment--heading .text-block {
+  font-size: 17px;
+  font-weight: 720;
+  line-height: 1.5;
+}
+
+.segment--heading .translation {
+  font-size: calc(var(--translation-font-size) + 1px);
+  font-weight: 720;
+  line-height: 1.65;
+}
+
+.segment--front-matter .text-block {
+  color: #303832;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.segment--front-matter .translation {
+  color: #26312b;
+  font-size: calc(var(--translation-font-size) - 1px);
+  line-height: 1.65;
 }
 
 .translation.is-streaming::after {
