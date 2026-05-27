@@ -123,9 +123,11 @@
     return segment;
   }
 
-  function updateSegmentSource(id, sourceText) {
+  function updateSegmentSource(id, sourceText, streaming) {
     const segment = ensureSegment(id, sourceText);
-    segment.querySelector(".source").textContent = sourceText || "";
+    const source = segment.querySelector(".source");
+    source.textContent = sourceText || "";
+    source.classList.toggle("is-streaming", Boolean(streaming));
   }
 
   function updateSegmentStatus(id, status) {
@@ -152,7 +154,9 @@
   function statusLabel(status) {
     const labels = {
       summarizing: "Summarizing",
+      summarizing_context: "Summarizing context",
       summary_cached: "Using summary",
+      refining_summary: "Refining summary",
       translating: "Translating",
       refining: "Refining"
     };
@@ -206,7 +210,8 @@
         throw new Error("Streaming response is not available.");
       }
 
-      setStatus("Translating", "busy");
+      const activeMode = els.processingMode.value === "summarize" ? "Summarizing" : "Translating";
+      setStatus(activeMode, "busy");
       await consumeStream(response.body);
       setStatus("Complete", null);
     } catch (error) {
@@ -265,7 +270,7 @@
       return;
     }
     if (event.type === "segment_source_update") {
-      updateSegmentSource(event.id, event.source || "");
+      updateSegmentSource(event.id, event.source || "", event.streaming);
       return;
     }
     if (event.type === "segment_status") {
@@ -289,6 +294,10 @@
       if ((stats.summarized || 0) > 0 || (stats.summary_cached || 0) > 0) {
         parts.push(`${stats.summarized || 0} summarized`);
         parts.push(`${stats.summary_cached || 0} summaries reused`);
+      }
+      if ((stats.summary_refined || 0) > 0 || (stats.summary_refine_cached || 0) > 0) {
+        parts.push(`${stats.summary_refined || 0} summary refinements`);
+        parts.push(`${stats.summary_refine_cached || 0} refined summaries reused`);
       }
       els.stats.textContent = parts.join(", ");
       return;

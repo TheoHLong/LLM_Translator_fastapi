@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
@@ -12,7 +12,13 @@ from fastapi.staticfiles import StaticFiles
 
 from cache import TranslationCache
 from document_parser import Segment, parse_upload
-from translator import OllamaTranslationError, OllamaTranslator, PROMPT_VERSION, RefinementContextEntry
+from translator import (
+    OllamaTranslationError,
+    OllamaTranslator,
+    PROMPT_VERSION,
+    RefinementContextEntry,
+    SummaryContextEntry,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -85,7 +91,15 @@ def stream_translation_events(
         parsed = parse_upload(filename, content, max_segment_chars=max_segment_chars)
         combined_text = "\n\n".join(segment.text for segment in parsed.segments)
         source_lang, target_lang = translator.normalize_direction(direction, combined_text)
-        stats = {"cached": 0, "translated": 0, "skipped": 0, "summarized": 0, "summary_cached": 0}
+        stats = {
+            "cached": 0,
+            "translated": 0,
+            "skipped": 0,
+            "summarized": 0,
+            "summary_cached": 0,
+            "summary_refined": 0,
+            "summary_refine_cached": 0,
+        }
 
         yield ndjson_event(
             {
@@ -160,28 +174,15 @@ def process_segment(
 
     working_text = source_text
     if processing_mode == "summarize" and len(source_text) >= 240:
-        summary_key = make_summary_cache_key(text=source_text, source_lang=source_lang)
-        cached_summary = cache.get(summary_key)
-        if cached_summary is not None:
-            working_text = cached_summary
-            stats["summary_cached"] += 1
-            yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summary_cached"})
-        else:
-            yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summarizing"})
-            working_text = translator.summarize(source_text, source_lang)
-            cache.set(
-                summary_key,
-                working_text,
-                {
-                    "source_lang": source_lang,
-                    "target_lang": source_lang,
-                    "model": translator.summary_model,
-                    "mode": "summarize:source",
-                    "prompt_version": PROMPT_VERSION,
-                },
-            )
-            stats["summarized"] += 1
-        yield ndjson_event({"type": "segment_source_update", "id": segment.id, "source": working_text})
+        working_text = yield from summarize_segment_text(
+            segment=segment,
+            all_segments=all_segments,
+            segment_index=segment_index,
+            quality=quality,
+            source_lang=source_lang,
+            refine_context_neighbors=refine_context_neighbors,
+            stats=stats,
+        )
 
     quick_initial = None
     context_entries: List[RefinementContextEntry] = []
@@ -219,17 +220,20 @@ def process_segment(
     )
     cached_value = cache.get(cache_key)
     if cached_value is not None:
-        stats["cached"] += 1
-        yield ndjson_event(
-            {
-                "type": "segment_done",
-                "id": segment.id,
-                "translation": cached_value,
-                "cached": True,
-                "skipped": False,
-            }
-        )
-        return
+        if quality == "refine":
+            quick_initial = cached_value
+        else:
+            stats["cached"] += 1
+            yield ndjson_event(
+                {
+                    "type": "segment_done",
+                    "id": segment.id,
+                    "translation": cached_value,
+                    "cached": True,
+                    "skipped": False,
+                }
+            )
+            return
 
     yield ndjson_event(
         {
@@ -286,13 +290,13 @@ def make_cache_key(*, text: str, source_lang: str, target_lang: str, mode: str) 
     )
 
 
-def make_summary_cache_key(*, text: str, source_lang: str) -> str:
+def make_summary_cache_key(*, text: str, source_lang: str, mode: str = "summarize:source") -> str:
     return cache.make_key(
         text=text,
         source_lang=source_lang,
         target_lang=source_lang,
         model=translator.summary_model,
-        mode="summarize:source",
+        mode=mode,
         prompt_version=PROMPT_VERSION,
     )
 
@@ -315,6 +319,184 @@ def get_cached_quick_translation(
         mode=f"{processing_mode}:quick",
     )
     return cache.get(quick_key)
+
+
+def summarize_segment_text(
+    *,
+    segment: Segment,
+    all_segments: List[Segment],
+    segment_index: int,
+    quality: str,
+    source_lang: str,
+    refine_context_neighbors: int,
+    stats: Dict[str, int],
+) -> Generator[str, None, str]:
+    if quality == "refine":
+        return (yield from summarize_segment_text_refined(
+            segment=segment,
+            all_segments=all_segments,
+            segment_index=segment_index,
+            source_lang=source_lang,
+            refine_context_neighbors=refine_context_neighbors,
+            stats=stats,
+        ))
+
+    return (yield from summarize_segment_text_quick(
+        segment=segment,
+        source_lang=source_lang,
+        stats=stats,
+    ))
+
+
+def summarize_segment_text_quick(
+    *,
+    segment: Segment,
+    source_lang: str,
+    stats: Dict[str, int],
+) -> Generator[str, None, str]:
+    summary_key = make_summary_cache_key(text=segment.text, source_lang=source_lang)
+    cached_summary = cache.get(summary_key)
+    if cached_summary is not None:
+        stats["summary_cached"] += 1
+        yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summary_cached"})
+        yield ndjson_event(
+            {
+                "type": "segment_source_update",
+                "id": segment.id,
+                "source": cached_summary,
+                "streaming": False,
+            }
+        )
+        return cached_summary
+
+    yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summarizing"})
+    final_summary = ""
+    for partial in translator.summarize_stream(segment.text, source_lang):
+        final_summary = partial
+        yield ndjson_event(
+            {
+                "type": "segment_source_update",
+                "id": segment.id,
+                "source": partial,
+                "streaming": True,
+            }
+        )
+
+    final_summary = final_summary or segment.text
+    cache.set(
+        summary_key,
+        final_summary,
+        {
+            "source_lang": source_lang,
+            "target_lang": source_lang,
+            "model": translator.summary_model,
+            "mode": "summarize:source",
+            "prompt_version": PROMPT_VERSION,
+        },
+    )
+    stats["summarized"] += 1
+    yield ndjson_event(
+        {
+            "type": "segment_source_update",
+            "id": segment.id,
+            "source": final_summary,
+            "streaming": False,
+        }
+    )
+    return final_summary
+
+
+def summarize_segment_text_refined(
+    *,
+    segment: Segment,
+    all_segments: List[Segment],
+    segment_index: int,
+    source_lang: str,
+    refine_context_neighbors: int,
+    stats: Dict[str, int],
+) -> Generator[str, None, str]:
+    quick_summary = yield from summarize_segment_text_quick(
+        segment=segment,
+        source_lang=source_lang,
+        stats=stats,
+    )
+    yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summarizing_context"})
+    context_entries = build_summary_refinement_context(
+        segments=all_segments,
+        current_index=segment_index,
+        neighbor_count=refine_context_neighbors,
+        source_lang=source_lang,
+        stats=stats,
+    )
+    cache_mode = f"summarize:source:refine:ctx{refine_context_neighbors}"
+    cache_text = make_summary_refine_cache_text(
+        current_text=segment.text,
+        current_quick=quick_summary,
+        context_entries=context_entries,
+        neighbor_count=refine_context_neighbors,
+    )
+    summary_key = make_summary_cache_key(
+        text=cache_text,
+        source_lang=source_lang,
+        mode=cache_mode,
+    )
+    cached_summary = cache.get(summary_key)
+    summary_draft = quick_summary
+    if cached_summary is not None:
+        stats["summary_refine_cached"] += 1
+        yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "summary_cached"})
+        yield ndjson_event(
+            {
+                "type": "segment_source_update",
+                "id": segment.id,
+                "source": cached_summary,
+                "streaming": False,
+            }
+        )
+        summary_draft = cached_summary
+
+    yield ndjson_event({"type": "segment_status", "id": segment.id, "status": "refining_summary"})
+    final_summary = ""
+    for partial in translator.summarize_stream(
+        segment.text,
+        source_lang,
+        "refine",
+        initial=summary_draft,
+        context=context_entries,
+    ):
+        final_summary = partial
+        yield ndjson_event(
+            {
+                "type": "segment_source_update",
+                "id": segment.id,
+                "source": partial,
+                "streaming": True,
+            }
+        )
+
+    final_summary = final_summary or summary_draft or segment.text
+    cache.set(
+        summary_key,
+        final_summary,
+        {
+            "source_lang": source_lang,
+            "target_lang": source_lang,
+            "model": translator.summary_model,
+            "mode": cache_mode,
+            "prompt_version": PROMPT_VERSION,
+            "refine_context_neighbors": refine_context_neighbors,
+        },
+    )
+    stats["summary_refined"] += 1
+    yield ndjson_event(
+        {
+            "type": "segment_source_update",
+            "id": segment.id,
+            "source": final_summary,
+            "streaming": False,
+        }
+    )
+    return final_summary
 
 
 def build_refinement_context(
@@ -357,6 +539,66 @@ def build_refinement_context(
     return context
 
 
+def build_summary_refinement_context(
+    *,
+    segments: List[Segment],
+    current_index: int,
+    neighbor_count: int,
+    source_lang: str,
+    stats: Dict[str, int],
+) -> List[SummaryContextEntry]:
+    context: List[SummaryContextEntry] = []
+    start_index = max(0, current_index - neighbor_count)
+    end_index = min(len(segments), current_index + neighbor_count + 1)
+
+    for index in range(start_index, end_index):
+        if index == current_index:
+            continue
+        context.append(
+            SummaryContextEntry(
+                label=refinement_context_label(index - current_index),
+                summary=get_quick_summary_for_context(
+                    segment=segments[index],
+                    source_lang=source_lang,
+                    stats=stats,
+                ),
+            )
+        )
+
+    return context
+
+
+def get_quick_summary_for_context(
+    *,
+    segment: Segment,
+    source_lang: str,
+    stats: Dict[str, int],
+) -> str:
+    if translator.should_skip_translation(segment.text) or len(segment.text) < 240:
+        return segment.text
+
+    summary_key = make_summary_cache_key(text=segment.text, source_lang=source_lang)
+    cached_summary = cache.get(summary_key)
+    if cached_summary is not None:
+        stats["summary_cached"] += 1
+        return cached_summary
+
+    summary = translator.summarize(segment.text, source_lang)
+    cache.set(
+        summary_key,
+        summary,
+        {
+            "source_lang": source_lang,
+            "target_lang": source_lang,
+            "model": translator.summary_model,
+            "mode": "summarize:source",
+            "prompt_version": PROMPT_VERSION,
+        },
+    )
+    stats["summarized"] += 1
+    return summary
+
+
 def context_source_text(*, segment: Segment, processing_mode: str, source_lang: str) -> str:
     if processing_mode == "summarize" and len(segment.text) >= 240:
         cached_summary = cache.get(make_summary_cache_key(text=segment.text, source_lang=source_lang))
@@ -387,6 +629,28 @@ def make_refine_cache_text(
                 "label": entry.label,
                 "source": entry.source,
                 "quick_translation": entry.quick_translation or "",
+            }
+            for entry in context_entries
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def make_summary_refine_cache_text(
+    *,
+    current_text: str,
+    current_quick: Optional[str],
+    context_entries: List[SummaryContextEntry],
+    neighbor_count: int,
+) -> str:
+    payload = {
+        "current_text": current_text,
+        "current_quick": current_quick or "",
+        "neighbor_count": neighbor_count,
+        "context": [
+            {
+                "label": entry.label,
+                "summary": entry.summary,
             }
             for entry in context_entries
         ],

@@ -5,7 +5,7 @@ project's core workflow while moving streaming display into browser-managed DOM:
 
 - upload PDF, DOCX, TXT, HTML, VTT, or SRT files
 - split extracted content into readable segments
-- choose document translation or content extraction / summarize mode
+- choose document translation or summarize mode
 - stream Ollama translation output per segment
 - use quick translation by default, with a separate Refine action
 - refine with selectable neighboring segment context windows

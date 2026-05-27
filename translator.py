@@ -29,6 +29,12 @@ class RefinementContextEntry:
     quick_translation: Optional[str] = None
 
 
+@dataclass
+class SummaryContextEntry:
+    label: str
+    summary: str
+
+
 class TextProtector:
     """Protect LaTeX math and code from translation edits."""
 
@@ -120,22 +126,60 @@ class OllamaTranslator:
             return True
         return False
 
-    def summarize(self, text: str, source_lang: str) -> str:
-        protected = self.protector.protect(text)
-        prompt = f"""Summarize the following {source_lang} passage in one clear paragraph.
-Keep essential facts, names, technical terms, and important equations.
-Output only the summary.
+    def summarize(
+        self,
+        text: str,
+        source_lang: str,
+        quality: str = "quick",
+        *,
+        initial: Optional[str] = None,
+        context: Optional[List[SummaryContextEntry]] = None,
+    ) -> str:
+        final = ""
+        for partial in self.summarize_stream(
+            text,
+            source_lang,
+            quality,
+            initial=initial,
+            context=context,
+        ):
+            final = partial
+        return final or text
 
-Text:
-{protected.text}
-"""
-        result = self._completion(
+    def summarize_stream(
+        self,
+        text: str,
+        source_lang: str,
+        quality: str = "quick",
+        *,
+        initial: Optional[str] = None,
+        context: Optional[List[SummaryContextEntry]] = None,
+    ) -> Iterator[str]:
+        protected = self.protector.protect(text)
+
+        if quality == "refine":
+            context_block = self._summary_context_block(context or [], source_lang)
+            prompt = self._summary_improvement_prompt(
+                protected.text,
+                source_lang,
+                initial or protected.text,
+                context_block,
+            )
+            yield from self._completion_stream(
+                prompt,
+                f"You are an expert at editing {source_lang} summaries.",
+                model=self.summary_model,
+                placeholders=protected.placeholders,
+            )
+            return
+
+        prompt, system_message = self._summary_prompt(protected.text, source_lang)
+        yield from self._completion_stream(
             prompt,
-            f"You are an expert at summarizing {source_lang} text.",
+            system_message,
             model=self.summary_model,
             placeholders=protected.placeholders,
         )
-        return result or text
 
     def translate(self, text: str, source_lang: str, target_lang: str, quality: str) -> str:
         final = ""
@@ -182,6 +226,18 @@ Text:
         prompt, system_message = self._quick_prompt(protected.text, source_lang, target_lang)
         return self._completion(prompt, system_message, placeholders=protected.placeholders)
 
+    @staticmethod
+    def _summary_prompt(text: str, source_lang: str) -> Tuple[str, str]:
+        system_message = f"You are an expert at summarizing {source_lang} text."
+        prompt = f"""Summarize the following {source_lang} passage in one clear paragraph.
+Keep essential facts, names, technical terms, and important equations.
+Output only the summary.
+
+Text:
+{text}
+"""
+        return prompt, system_message
+
     def _quick_prompt(self, text: str, source_lang: str, target_lang: str) -> Tuple[str, str]:
         system_message = f"You are an expert linguist specializing in translation from {source_lang} to {target_lang}."
         prompt = f"""This is a {source_lang} to {target_lang} translation.
@@ -211,7 +267,7 @@ Do not rewrite or translate the surrounding segments.
 {context_section}Current source:
 {protected.text}
 
-Current quick translation:
+Current draft translation:
 {initial}
 
 Give concise, specific improvement notes for the CURRENT segment only.
@@ -238,7 +294,7 @@ Do not include labels, notes, explanations, or any surrounding segment content.
 {context_section}Current source:
 {text}
 
-Current quick translation:
+Current draft translation:
 {initial}
 
 Notes:
@@ -269,6 +325,46 @@ Output only the improved {target_lang} translation for the CURRENT segment.
             blocks.append("")
         return "\n".join(blocks).strip()
 
+    @staticmethod
+    def _summary_context_block(
+        context: List[SummaryContextEntry],
+        source_lang: str,
+    ) -> str:
+        if not context:
+            return ""
+
+        blocks = ["Surrounding first-pass summaries (reference only; do not output these):"]
+        for entry in context:
+            blocks.append(f"[{entry.label}]")
+            blocks.append(f"{source_lang} summary:")
+            blocks.append(entry.summary)
+            blocks.append("")
+        return "\n".join(blocks).strip()
+
+    @staticmethod
+    def _summary_improvement_prompt(
+        text: str,
+        source_lang: str,
+        initial: str,
+        context_block: str = "",
+    ) -> str:
+        context_section = f"{context_block}\n\n" if context_block else ""
+        return f"""Improve only the CURRENT draft summary using the CURRENT source and surrounding first-pass summaries.
+Use the CURRENT source as the factual authority for the improved summary.
+Use surrounding summaries only to understand references, continuity, duplicated details, terminology, and what facts matter.
+Do not output the surrounding summaries.
+Do not introduce facts that are absent from the CURRENT source.
+Do not include labels, notes, or explanations.
+
+{context_section}Current source:
+{text}
+
+Current draft summary:
+{initial}
+
+Output only the improved {source_lang} summary for the CURRENT segment in one clear paragraph.
+"""
+
     def _completion(
         self,
         prompt: str,
@@ -292,9 +388,15 @@ Output only the improved {target_lang} translation for the CURRENT segment.
         prompt: str,
         system_message: str,
         *,
+        model: Optional[str] = None,
         placeholders: Optional[Dict[str, str]] = None,
     ) -> Iterator[str]:
-        raw_chunks = self._raw_completion_stream(prompt, system_message, placeholders=placeholders)
+        raw_chunks = self._raw_completion_stream(
+            prompt,
+            system_message,
+            model=model,
+            placeholders=placeholders,
+        )
         visible_chunks = self._hide_thinking_chunks(raw_chunks)
         raw_visible = ""
         last_visible = ""
@@ -311,12 +413,19 @@ Output only the improved {target_lang} translation for the CURRENT segment.
         prompt: str,
         system_message: str,
         *,
+        model: Optional[str] = None,
         placeholders: Optional[Dict[str, str]] = None,
     ) -> Iterator[str]:
         try:
             with requests.post(
                 self.base_url,
-                json=self._payload(prompt, system_message, stream=True, placeholders=placeholders),
+                json=self._payload(
+                    prompt,
+                    system_message,
+                    stream=True,
+                    model=model,
+                    placeholders=placeholders,
+                ),
                 timeout=self.timeout,
                 stream=True,
             ) as response:

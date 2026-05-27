@@ -353,6 +353,7 @@ progress {
   line-height: 1.65;
 }
 
+.source.is-streaming::after,
 .translation.is-streaming::after {
   content: "";
   display: inline-block;
