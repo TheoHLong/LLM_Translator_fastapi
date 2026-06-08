@@ -1,0 +1,10 @@
+{
+  "ollama": {
+    "base_url": "http://localhost:11434/api/generate",
+    "translation_model": "translategemma",
+    "summary_model": "",
+    "auto_pull": true,
+    "request_timeout": 300,
+    "pull_timeout": 1800
+  }
+}

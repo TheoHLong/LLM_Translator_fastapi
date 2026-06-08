@@ -17,11 +17,8 @@ project's core workflow while moving streaming display into browser-managed DOM:
 
 ## Run
 
-Start Ollama and make sure the translation model is available:
-
-```bash
-ollama pull translategemma
-```
+Start Ollama. The app checks the configured model on each run and can pull it
+from Ollama automatically when it is missing locally.
 
 Install dependencies and start the app:
 
@@ -47,11 +44,34 @@ http://127.0.0.1:8766
 
 ## Configuration
 
-Environment variables:
+Edit `config.json` to switch models:
+
+```json
+{
+  "ollama": {
+    "base_url": "http://localhost:11434/api/generate",
+    "translation_model": "translategemma",
+    "summary_model": "",
+    "auto_pull": true,
+    "request_timeout": 300,
+    "pull_timeout": 1800
+  }
+}
+```
+
+- `translation_model`: model used for translation and refinement
+- `summary_model`: model used for summaries; leave empty to reuse `translation_model`
+- `auto_pull`: when `true`, missing models are pulled through Ollama before processing starts
+
+Environment variables still override `config.json`:
 
 - `OLLAMA_BASE_URL`: defaults to `http://localhost:11434/api/generate`
 - `OLLAMA_TRANSLATION_MODEL`: defaults to `translategemma`
 - `OLLAMA_SUMMARY_MODEL`: defaults to the translation model
+- `OLLAMA_AUTO_PULL`: defaults to `true`
+- `OLLAMA_REQUEST_TIMEOUT`: defaults to `300`
+- `OLLAMA_PULL_TIMEOUT`: defaults to `1800`
+- `TRANSLATOR_CONFIG_PATH`: optional path to a different JSON config file
 
 ## Notes
 

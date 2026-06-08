@@ -67,6 +67,26 @@
     els.status.classList.toggle("is-error", tone === "error");
   }
 
+  function updateModelLine(data) {
+    const translationModel = data.translation_model || data.model || "unknown";
+    const summaryModel = data.summary_model || translationModel;
+    const modelText = summaryModel && summaryModel !== translationModel
+      ? `Ollama models: ${translationModel} / summary ${summaryModel}`
+      : `Ollama model: ${translationModel}`;
+
+    if (data.online === false) {
+      els.modelLine.textContent = `${modelText} / offline`;
+      return;
+    }
+    if (data.ready === false || data.ok === false) {
+      els.modelLine.textContent = data.auto_pull
+        ? `${modelText} / auto-pull enabled`
+        : `${modelText} / missing`;
+      return;
+    }
+    els.modelLine.textContent = `${modelText} / ready`;
+  }
+
   function setRunning(isRunning) {
     els.startButton.disabled = isRunning;
     els.refineButton.disabled = isRunning;
@@ -252,16 +272,22 @@
   }
 
   function handleEvent(event) {
+    if (event.type === "model_status") {
+      updateModelLine(event);
+      setStatus(event.message || "Checking Ollama model", "busy");
+      return;
+    }
     if (event.type === "meta") {
       segmentCount = event.segment_count || 0;
       els.progress.max = Math.max(segmentCount, 1);
       els.progress.value = 0;
       els.documentLabel.textContent = `${event.filename} (${event.file_type})`;
-      els.modelLine.textContent = `Ollama model: ${event.model}`;
+      updateModelLine(event);
       const contextLabel = event.quality === "refine"
         ? ` / context ±${event.refine_context_neighbors || 1}`
         : "";
       els.stats.textContent = `${event.source_lang} to ${event.target_lang} / ${event.mode} / ${event.quality}${contextLabel}`;
+      setStatus(event.mode === "summarize" ? "Summarizing" : "Translating", "busy");
       return;
     }
     if (event.type === "segment_start") {
@@ -311,9 +337,11 @@
     try {
       const response = await fetch("/api/health");
       const data = await response.json();
-      els.modelLine.textContent = `Ollama model: ${data.model}`;
-      if (!data.ok) {
+      updateModelLine(data);
+      if (data.online === false) {
         setStatus(data.error || "Ollama unavailable", "error");
+      } else if (!data.ok) {
+        setStatus(data.error || "Ollama model missing", data.auto_pull ? "busy" : "error");
       }
     } catch (_error) {
       setStatus("Health check failed", "error");

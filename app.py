@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from cache import TranslationCache
+from config import load_config
 from document_parser import Segment, parse_upload
 from translator import (
     OllamaTranslationError,
@@ -25,7 +26,16 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 CACHE_PATH = ROOT / ".cache" / "translation_cache.json"
 
-translator = OllamaTranslator()
+app_config = load_config()
+translator = OllamaTranslator(
+    base_url=app_config.ollama.base_url,
+    model=app_config.ollama.translation_model,
+    summary_model=app_config.ollama.summary_model,
+    timeout=app_config.ollama.request_timeout,
+    auto_pull=app_config.ollama.auto_pull,
+    pull_timeout=app_config.ollama.pull_timeout,
+    config_path=str(app_config.ollama.config_path),
+)
 cache = TranslationCache(CACHE_PATH)
 api = FastAPI(title="FastAPI LLM Translator")
 api.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -88,6 +98,10 @@ def stream_translation_events(
         safe_context_neighbors = normalize_refine_context_neighbors(refine_context_neighbors)
         if safe_mode == "extract":
             safe_mode = "summarize"
+
+        for event in translator.ensure_models_available_events(translator.required_models_for_mode(safe_mode)):
+            yield ndjson_event(event)
+
         parsed = parse_upload(filename, content, max_segment_chars=max_segment_chars)
         combined_text = "\n\n".join(segment.text for segment in parsed.segments)
         source_lang, target_lang = translator.normalize_direction(direction, combined_text)
@@ -110,6 +124,9 @@ def stream_translation_events(
                 "source_lang": source_lang,
                 "target_lang": target_lang,
                 "model": translator.model,
+                "translation_model": translator.model,
+                "summary_model": translator.summary_model,
+                "auto_pull": translator.auto_pull,
                 "mode": safe_mode,
                 "quality": safe_quality,
                 "refine_context_neighbors": safe_context_neighbors,
