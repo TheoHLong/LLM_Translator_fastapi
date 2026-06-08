@@ -514,22 +514,22 @@ Output only the improved {source_lang} summary for the CURRENT segment in one cl
 
             yield self._model_status_event("checking", model, f"Checking Ollama model: {model}")
             model_names = self._installed_model_names(timeout=min(float(self.timeout), 10.0))
-            if self._model_available(model, model_names):
+            if self._model_ready(model, model_names, timeout=min(float(self.timeout), 10.0)):
                 self._ensured_models.add(model)
                 yield self._model_status_event("ready", model, f"Ollama model ready: {model}")
                 return
 
             if not self.auto_pull:
                 raise OllamaTranslationError(
-                    f"Model {model} is not installed. Install it with: ollama pull {model}"
+                    f"Model {model} is not available to Ollama. Install or repair it with: ollama pull {model}"
                 )
 
             yield self._model_status_event("pulling", model, f"Pulling Ollama model: {model}")
             yield from self._pull_model_events(model)
 
             model_names = self._installed_model_names(timeout=min(float(self.timeout), 10.0))
-            if not self._model_available(model, model_names):
-                raise OllamaTranslationError(f"Model {model} was pulled but is still not listed by Ollama.")
+            if not self._model_ready(model, model_names, timeout=min(float(self.timeout), 10.0)):
+                raise OllamaTranslationError(f"Model {model} was pulled but Ollama still cannot load it.")
 
             self._ensured_models.add(model)
             yield self._model_status_event("ready", model, f"Ollama model ready: {model}")
@@ -661,6 +661,20 @@ Output only the improved {source_lang} summary for the CURRENT segment in one cl
                 return True
         return False
 
+    def _model_ready(self, model: str, model_names: Iterable[str], timeout: Optional[float] = None) -> bool:
+        if not self._model_available(model, model_names):
+            return False
+        return self._model_resolves(model, timeout=timeout)
+
+    def _model_resolves(self, model: str, timeout: Optional[float] = None) -> bool:
+        show_url = self._ollama_api_url("show")
+        try:
+            response = requests.post(show_url, json={"model": model}, timeout=timeout or self.timeout)
+            response.raise_for_status()
+        except requests.RequestException:
+            return False
+        return True
+
     @classmethod
     def _hide_thinking_chunks(cls, chunks: Iterator[str]) -> Iterator[str]:
         in_think = False
@@ -730,8 +744,8 @@ Output only the improved {source_lang} summary for the CURRENT segment in one cl
                 "error": str(exc),
             }
 
-        model_available = self._model_available(self.model, model_names)
-        summary_model_available = self._model_available(self.summary_model, model_names)
+        model_available = self._model_ready(self.model, model_names, timeout=timeout)
+        summary_model_available = self._model_ready(self.summary_model, model_names, timeout=timeout)
         ready = model_available and summary_model_available
         missing_models = [
             model
@@ -763,5 +777,5 @@ Output only the improved {source_lang} summary for the CURRENT segment in one cl
             return ""
         model_list = ", ".join(missing_models)
         if self.auto_pull:
-            return f"Model not installed locally: {model_list}. It will be pulled on first use."
-        return f"Model not installed locally: {model_list}."
+            return f"Model not available locally: {model_list}. It will be pulled on first use."
+        return f"Model not available locally: {model_list}."
