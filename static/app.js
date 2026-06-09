@@ -277,6 +277,10 @@
       setStatus(event.message || "Checking Ollama model", "busy");
       return;
     }
+    if (event.type === "pipeline_stage") {
+      setStatus(event.message || "Processing", "busy");
+      return;
+    }
     if (event.type === "meta") {
       segmentCount = event.segment_count || 0;
       els.progress.max = Math.max(segmentCount, 1);

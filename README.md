@@ -63,6 +63,11 @@ Edit `config.json` to switch models:
 - `summary_model`: model used for summaries; leave empty to reuse `translation_model`
 - `auto_pull`: when `true`, missing models are pulled through Ollama before processing starts
 
+When `summary_model` and `translation_model` are different, summarize mode runs
+in two stages: it completes all summaries with `summary_model`, then translates
+all segments with `translation_model`. When both models are the same, the app
+keeps the original per-segment summarize/translate flow.
+
 Environment variables still override `config.json`:
 
 - `OLLAMA_BASE_URL`: defaults to `http://localhost:11434/api/generate`

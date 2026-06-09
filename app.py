@@ -133,18 +133,28 @@ def stream_translation_events(
             }
         )
 
-        for segment_index, segment in enumerate(parsed.segments):
-            yield from process_segment(
-                segment=segment,
-                all_segments=parsed.segments,
-                segment_index=segment_index,
-                processing_mode=safe_mode,
+        if should_process_by_stage(safe_mode):
+            yield from process_segments_by_stage(
+                segments=parsed.segments,
                 quality=safe_quality,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 refine_context_neighbors=safe_context_neighbors,
                 stats=stats,
             )
+        else:
+            for segment_index, segment in enumerate(parsed.segments):
+                yield from process_segment(
+                    segment=segment,
+                    all_segments=parsed.segments,
+                    segment_index=segment_index,
+                    processing_mode=safe_mode,
+                    quality=safe_quality,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    refine_context_neighbors=safe_context_neighbors,
+                    stats=stats,
+                )
 
         yield ndjson_event({"type": "done", "stats": stats})
 
@@ -165,16 +175,12 @@ def process_segment(
     target_lang: str,
     refine_context_neighbors: int,
     stats: Dict[str, int],
+    working_text_override: Optional[str] = None,
+    emit_start: bool = True,
 ) -> Iterator[str]:
     source_text = segment.text
-    yield ndjson_event(
-        {
-            "type": "segment_start",
-            "id": segment.id,
-            "source": source_text,
-            "kind": segment.kind,
-        }
-    )
+    if emit_start:
+        yield segment_start_event(segment)
 
     if translator.should_skip_translation(source_text):
         stats["skipped"] += 1
@@ -189,8 +195,8 @@ def process_segment(
         )
         return
 
-    working_text = source_text
-    if processing_mode == "summarize" and len(source_text) >= 240:
+    working_text = working_text_override if working_text_override is not None else source_text
+    if working_text_override is None and processing_mode == "summarize" and len(source_text) >= 240:
         working_text = yield from summarize_segment_text(
             segment=segment,
             all_segments=all_segments,
@@ -292,6 +298,96 @@ def process_segment(
             "translation": final_translation,
             "cached": False,
             "skipped": False,
+        }
+    )
+
+
+def should_process_by_stage(processing_mode: str) -> bool:
+    return processing_mode == "summarize" and translator.summary_model != translator.model
+
+
+def process_segments_by_stage(
+    *,
+    segments: List[Segment],
+    quality: str,
+    source_lang: str,
+    target_lang: str,
+    refine_context_neighbors: int,
+    stats: Dict[str, int],
+) -> Iterator[str]:
+    yield ndjson_event(
+        {
+            "type": "pipeline_stage",
+            "stage": "summarizing",
+            "message": f"Summarizing with {translator.summary_model}",
+        }
+    )
+
+    working_text_by_id: Dict[str, str] = {}
+    for segment_index, segment in enumerate(segments):
+        yield segment_start_event(segment)
+        source_text = segment.text
+
+        if translator.should_skip_translation(source_text):
+            stats["skipped"] += 1
+            yield ndjson_event(
+                {
+                    "type": "segment_done",
+                    "id": segment.id,
+                    "translation": source_text,
+                    "cached": False,
+                    "skipped": True,
+                }
+            )
+            continue
+
+        working_text = source_text
+        if len(source_text) >= 240:
+            working_text = yield from summarize_segment_text(
+                segment=segment,
+                all_segments=segments,
+                segment_index=segment_index,
+                quality=quality,
+                source_lang=source_lang,
+                refine_context_neighbors=refine_context_neighbors,
+                stats=stats,
+            )
+        working_text_by_id[segment.id] = working_text
+
+    yield ndjson_event(
+        {
+            "type": "pipeline_stage",
+            "stage": "translating",
+            "message": f"Translating with {translator.model}",
+        }
+    )
+
+    for segment_index, segment in enumerate(segments):
+        working_text = working_text_by_id.get(segment.id)
+        if working_text is None:
+            continue
+        yield from process_segment(
+            segment=segment,
+            all_segments=segments,
+            segment_index=segment_index,
+            processing_mode="summarize",
+            quality=quality,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            refine_context_neighbors=refine_context_neighbors,
+            stats=stats,
+            working_text_override=working_text,
+            emit_start=False,
+        )
+
+
+def segment_start_event(segment: Segment) -> str:
+    return ndjson_event(
+        {
+            "type": "segment_start",
+            "id": segment.id,
+            "source": segment.text,
+            "kind": segment.kind,
         }
     )
 
